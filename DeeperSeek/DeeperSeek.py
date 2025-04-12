@@ -198,18 +198,8 @@ class DeepSeek:
         self.logger.debug("Token login successful!")
         
     async def _login_classic(self, token_failed: bool = False) -> None:
-        """Logs in to DeepSeek using email and password.
-    
-        Args
-        ---------
-            token_failed (bool): Indicates whether the token login attempt failed.
+        """Logs in to DeepSeek using email and password."""
         
-        Raises:
-        ---------
-            MissingInitialization: If the initialize method is not run before using this method.
-            InvalidCredentials: If the email or password is incorrect.
-        """
-    
         if not self._initialized:
             raise MissingInitialization("You must run the initialize method before using this method.")
         
@@ -217,7 +207,7 @@ class DeepSeek:
             
         # 1. Wait longer for the page to fully load
         try:
-            await sleep(3)  # Add a small delay to ensure page is loaded
+            await sleep(5)  # Increased initial wait time
             await self.browser.main_tab.evaluate(
                 "document.readyState === 'complete'",
                 await_promise=True,
@@ -227,435 +217,366 @@ class DeepSeek:
         except Exception as e:
             self.logger.error(f"Page loading check failed: {str(e)}")
             
-        # 2. Capture page source for debugging
+        # 2. Take a screenshot for debugging if possible
         try:
-            page_source = await self.browser.main_tab.evaluate(
-                    "document.body.innerHTML",
-                    await_promise=True,
-                    return_by_value=True
-                )
-            self.logger.debug(f"Login page structure found, size: {len(page_source)} bytes")
-            
-            # Look for login form elements
-            login_form_exists = await self.browser.main_tab.evaluate(
-                """
-                !!document.querySelector('input[type="text"]') && 
-                !!document.querySelector('input[type="password"]')
-                """,
-                await_promise=True,
-                return_by_value=True
-            )
-            self.logger.debug(f"Login form detected: {login_form_exists}")
-        except Exception as e:
-            self.logger.error(f"Failed to get page source: {str(e)}")
-        
-        # 3. Find and interact with the email input - use more generic selector
-        try:
-            self.logger.debug("Looking for email input field...")
-            email_input = await self.browser.main_tab.evaluate(
-                """
-                (function() {
-                    // Try different methods to find the email field
-                    const emailField = document.querySelector('input[type="text"]') || 
-                                       document.querySelector('input[type="email"]') ||
-                                       document.querySelector('input[placeholder*="email" i]');
-                    if (emailField) {
-                        emailField.focus();
-                        return true;
-                    }
-                    return false;
-                })()
-                """,
-                await_promise=True,
-                return_by_value=True
-            )
-            
-            if email_input:
-                self.logger.debug("Email input found via JS, entering email...")
-                await self.browser.main_tab.evaluate(
-                    f'document.activeElement.value = "{self._email}";',
-                    await_promise=True,
-                    return_by_value=True
-                )
-                self.logger.debug("Email entered successfully")
-            else:
-                self.logger.error("Could not find email input field with JavaScript")
-                raise InvalidCredentials("Could not find email input field")
-        except Exception as e:
-            self.logger.error(f"Failed to enter email: {str(e)}")
-            raise InvalidCredentials(f"Could not find email input field: {str(e)}")
-        
-        # 4. Find and interact with the password input
-        try:
-            self.logger.debug("Looking for password input field...")
-            password_input = await self.browser.main_tab.evaluate(
-                """
-                (function() {
-                    // Try to find and focus the password field
-                    const pwField = document.querySelector('input[type="password"]');
-                    if (pwField) {
-                        pwField.focus();
-                        return true;
-                    }
-                    return false;
-                })()
-                """,
-                await_promise=True,
-                return_by_value=True
-            )
-            
-            if password_input:
-                self.logger.debug("Password input found via JS, entering password...")
-                await self.browser.main_tab.evaluate(
-                    f'document.activeElement.value = "{self._password}";',
-                    await_promise=True,
-                    return_by_value=True
-                )
-                self.logger.debug("Password entered successfully")
-            else:
-                self.logger.error("Could not find password input field with JavaScript")
-                raise InvalidCredentials("Could not find password input field")
-        except Exception as e:
-            self.logger.error(f"Failed to enter password: {str(e)}")
-            raise InvalidCredentials(f"Could not find password input field: {str(e)}")
-        
-        # 5. Handle any checkbox in a more robust way
-        try:
-            self.logger.debug("Attempting to check any required checkboxes via JavaScript...")
-            await self.browser.main_tab.evaluate(
-                """
-                // More comprehensive checkbox finder and clicker
-                (function() {
-                    // Find all possible checkbox elements
-                    const checkboxSelectors = [
-                        'input[type="checkbox"]', 
-                        'div[class*="checkbox"]', 
-                        'div[class*="ds-checkbox"]',
-                        'label.checkbox',
-                        '*[role="checkbox"]'
-                    ];
-                    
-                    // Try each selector
-                    for (const selector of checkboxSelectors) {
-                        const elements = document.querySelectorAll(selector);
-                        if (elements.length > 0) {
-                            console.log('Found checkbox elements with selector: ' + selector);
-                            // Click all found elements
-                            elements.forEach(el => {
-                                try {
-                                    el.click();
-                                    console.log('Clicked checkbox element');
-                                } catch (e) {
-                                    console.log('Error clicking checkbox:', e);
-                                }
-                            });
-                        }
-                    }
-                    return true;
-                })()
-                """,
-                await_promise=True,
-                return_by_value=True
-            )
-            self.logger.debug("JavaScript checkbox handling completed")
-        except Exception as e:
-            self.logger.error(f"JavaScript checkbox handling failed: {str(e)}")
-            # Continue anyway as the checkbox might not be required
-        
-        # 6. Find and click the login button using a more robust approach
-        try:
-            self.logger.debug("Looking for login button...")
-            button_clicked = await self.browser.main_tab.evaluate(
-                """
-                (function() {
-                    // Try multiple approaches to find the login button
-                    const buttonSelectors = [
-                        'button[type="submit"]',
-                        'div[role="button"]',
-                        'button:not([disabled])',
-                        'input[type="submit"]',
-                        'a.login-button',
-                        // Text-based selectors
-                        'button:contains("Login")', 
-                        'button:contains("Sign In")',
-                        'div[role="button"]:contains("Login")',
-                        'div[role="button"]:contains("Sign In")'
-                    ];
-                    
-                    // Custom contains selector implementation
-                    function findElementsWithText(selector, text) {
-                        const elements = document.querySelectorAll(selector);
-                        return Array.from(elements).filter(el => 
-                            el.textContent.toLowerCase().includes(text.toLowerCase()));
-                    }
-                    
-                    // Try standard selectors
-                    for (const selector of buttonSelectors) {
-                        if (selector.includes(':contains(')) {
-                            // Handle our custom text-based selector
-                            const [baseSelector, textToFind] = selector.split(':contains(');
-                            const text = textToFind.replace('"', '').replace('")', '');
-                            const elements = findElementsWithText(baseSelector, text);
-                            if (elements.length > 0) {
-                                elements[0].click();
-                                return true;
-                            }
-                        } else {
-                            // Standard selector
-                            const elements = document.querySelectorAll(selector);
-                            if (elements.length > 0) {
-                                elements[0].click();
-                                return true;
-                            }
-                        }
-                    }
-                    
-                    // If nothing found, look for any button-like element
-                    const allButtons = document.querySelectorAll('button, [role="button"], input[type="submit"]');
-                    if (allButtons.length > 0) {
-                        // Click the last button as it's often the submit button
-                        allButtons[allButtons.length - 1].click();
-                        return true;
-                    }
-                    
-                    return false;
-                })()
-                """,
-                await_promise=True,
-                return_by_value=True
-            )
-            
-            if button_clicked:
-                self.logger.debug("Login button found and clicked via JS")
-            else:
-                self.logger.error("Could not find login button with JavaScript")
-                raise InvalidCredentials("Could not find or click login button")
-        except Exception as e:
-            self.logger.error(f"Failed to click login button: {str(e)}")
-            raise InvalidCredentials(f"Could not find or click login button: {str(e)}")
-        
-        # Replace lines around 392-451 (the section for waiting for successful login)
-
-        # 7. Wait for successful login with increased patience
-        self.logger.debug("Waiting for login to complete...")
-        try:
-            # Try several selectors that might indicate successful login
-            await sleep(10)  # Increased wait time after login button click
-            
-            # First check if we're redirected to a different URL that indicates success
+            self.logger.debug("Capturing page structure for debugging...")
             current_url = await self.browser.main_tab.evaluate(
                 "window.location.href",
                 await_promise=True,
                 return_by_value=True
             )
-            self.logger.debug(f"Current URL after login: {current_url}")
+            self.logger.debug(f"Current URL: {current_url}")
             
-            # Check if URL indicates we're past login screen (could be welcome, chat, or dashboard)
-            url_indicates_success = await self.browser.main_tab.evaluate(
+            page_source = await self.browser.main_tab.evaluate(
+                "document.documentElement.outerHTML",
+                await_promise=True,
+                return_by_value=True
+            )
+            self.logger.debug(f"Page HTML size: {len(page_source)} bytes")
+        except Exception as e:
+            self.logger.error(f"Failed to capture debug info: {str(e)}")
+        
+        # 3. Try to detect if we need to navigate to login first
+        try:
+            # Check if we need to navigate to login page first
+            has_login_button = await self.browser.main_tab.evaluate(
                 """
                 (function() {
-                    const url = window.location.href;
-                    // Check for various success indicators in URL
-                    return url.includes('/chat') || 
-                        url.includes('/welcome') || 
-                        url.includes('/dashboard') ||
-                        url.includes('/home') ||
-                        !url.includes('/login');
+                    // Look for "Log in" or "Sign in" buttons that might need to be clicked first
+                    const loginLinks = Array.from(document.querySelectorAll('a, button, div[role="button"]'))
+                        .filter(el => {
+                            const text = el.textContent.toLowerCase();
+                            return text.includes('log in') || 
+                                   text.includes('sign in') || 
+                                   text.includes('login') ||
+                                   text.includes('signin');
+                        });
+                    
+                    if (loginLinks.length > 0) {
+                        loginLinks[0].click();
+                        return true;
+                    }
+                    return false;
                 })()
                 """,
                 await_promise=True,
                 return_by_value=True
             )
             
-            if url_indicates_success:
-                self.logger.debug("Login appears successful based on URL change")
-                login_successful = True
-            else:
-                # If URL doesn't indicate success, look for UI elements
-                login_successful = await self.browser.main_tab.evaluate(
-                    """
-                    (function() {
-                        // Check for ANY of these indicators of successful login
+            if has_login_button:
+                self.logger.debug("Clicked on a login button to access login form")
+                await sleep(3)  # Wait for navigation or form to appear
+        except Exception as e:
+            self.logger.error(f"Error checking for login navigation: {str(e)}")
+        
+        # 4. Use completely JS-based approach to find and fill the login form
+        login_successful = await self.browser.main_tab.evaluate(
+            f"""
+            (function() {{
+                console.log("Starting JS-based login");
+                
+                // Wait a moment to ensure any animations are complete
+                setTimeout(() => {{}}, 1000);
+                
+                // First find all input fields
+                const allInputs = document.querySelectorAll('input');
+                console.log("Found " + allInputs.length + " input fields");
+                
+                // Look for email/username field using various attributes
+                let emailInput = null;
+                let passwordInput = null;
+                
+                for (const input of allInputs) {{
+                    const type = input.type?.toLowerCase() || '';
+                    const name = input.name?.toLowerCase() || '';
+                    const placeholder = input.placeholder?.toLowerCase() || '';
+                    const id = input.id?.toLowerCase() || '';
+                    const ariaLabel = input.getAttribute('aria-label')?.toLowerCase() || '';
+                    
+                    // Check for email/text input
+                    if ((type === 'email' || type === 'text') && 
+                        (name.includes('email') || name.includes('username') || 
+                         placeholder.includes('email') || placeholder.includes('username') ||
+                         id.includes('email') || id.includes('username') || 
+                         ariaLabel.includes('email') || ariaLabel.includes('username'))) {{
+                        emailInput = input;
+                        console.log("Found email input", input);
+                    }}
+                    
+                    // Check for password input
+                    if (type === 'password') {{
+                        passwordInput = input;
+                        console.log("Found password input", input);
+                    }}
+                }}
+                
+                // If we didn't find them by specific attributes, just try the first text and password inputs
+                if (!emailInput) {{
+                    emailInput = document.querySelector('input[type="text"], input[type="email"]');
+                    console.log("Falling back to first text input", emailInput);
+                }}
+                
+                if (!passwordInput) {{
+                    passwordInput = document.querySelector('input[type="password"]');
+                    console.log("Falling back to first password input", passwordInput);
+                }}
+                
+                // If we still don't have both inputs, we can't continue
+                if (!emailInput || !passwordInput) {{
+                    console.log("Could not find login form inputs");
+                    return false;
+                }}
+                
+                // Fill in the email and password
+                try {{
+                    // Focus and clear the field first
+                    emailInput.focus();
+                    emailInput.value = '';
+                    emailInput.value = "{self._email}";
+                    
+                    // Dispatch events to ensure the UI updates
+                    emailInput.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    emailInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    
+                    console.log("Filled email input");
+                    
+                    // Now do the same for password
+                    passwordInput.focus();
+                    passwordInput.value = '';
+                    passwordInput.value = "{self._password}";
+                    
+                    passwordInput.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    passwordInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    
+                    console.log("Filled password input");
+                }} catch (e) {{
+                    console.error("Error filling form:", e);
+                    return false;
+                }}
+                
+                // Now find and click any checkboxes (for terms agreement, etc.)
+                try {{
+                    const checkboxes = document.querySelectorAll('input[type="checkbox"], div[role="checkbox"]');
+                    for (const checkbox of checkboxes) {{
+                        checkbox.click();
+                        console.log("Clicked checkbox");
+                    }}
+                }} catch (e) {{
+                    console.error("Error clicking checkboxes:", e);
+                    // Continue anyway as checkboxes might not be required
+                }}
+                
+                // Now find and click the login/submit button
+                try {{
+                    // Look for login button by various attributes
+                    let loginButton = null;
+                    
+                    // First by type="submit"
+                    const submitButtons = document.querySelectorAll('button[type="submit"], input[type="submit"]');
+                    if (submitButtons.length > 0) {{
+                        loginButton = submitButtons[0];
+                    }}
+                    
+                    // Then by text content
+                    if (!loginButton) {{
+                        const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
+                        loginButton = buttons.find(el => {{
+                            const text = el.textContent.toLowerCase();
+                            return text.includes('log in') || 
+                                   text.includes('sign in') || 
+                                   text.includes('login') || 
+                                   text.includes('submit') ||
+                                   text === 'continue';
+                        }});
+                    }}
+                    
+                    // If still not found, use any button near the password field
+                    if (!loginButton && passwordInput) {{
+                        const rect = passwordInput.getBoundingClientRect();
+                        const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
                         
-                        // 1. Check for any textbox
-                        if (document.querySelectorAll('textarea').length > 0) return true;
+                        // Sort by proximity to password field
+                        const sortedButtons = buttons.sort((a, b) => {{
+                            const aRect = a.getBoundingClientRect();
+                            const bRect = b.getBoundingClientRect();
+                            
+                            // Calculate vertical distance (give preference to buttons below the password field)
+                            const aVertDist = aRect.top >= rect.bottom ? 
+                                             aRect.top - rect.bottom : 
+                                             1000 + (rect.top - aRect.bottom);
+                            
+                            const bVertDist = bRect.top >= rect.bottom ? 
+                                             bRect.top - rect.bottom : 
+                                             1000 + (rect.top - bRect.bottom);
+                            
+                            return aVertDist - bVertDist;
+                        }});
                         
-                        // 2. Check for elements that would only be shown to logged-in users
-                        if (document.querySelectorAll('div[class*="profile"], div[class*="avatar"], div[class*="user"]').length > 0) return true;
-                        
-                        // 3. Check for chat-related elements
-                        if (document.querySelectorAll('div[class*="chat"], div[class*="message"], div[class*="conversation"]').length > 0) return true;
-                        
-                        // 4. Check for welcome screens or onboarding elements
-                        if (document.querySelectorAll('div[class*="welcome"], div[class*="onboarding"], div[class*="getting-started"]').length > 0) return true;
-                        
-                        // 5. Check for navigation elements that appear post-login
-                        if (document.querySelectorAll('div[class*="sidebar"], div[class*="nav"], div[class*="menu"]').length > 0) return true;
-                        
-                        // 6. Check if login form is gone
-                        if (!document.querySelector('input[type="password"]')) return true;
-                        
+                        if (sortedButtons.length > 0) {{
+                            loginButton = sortedButtons[0];
+                        }}
+                    }}
+                    
+                    if (loginButton) {{
+                        console.log("Found login button, clicking it");
+                        loginButton.click();
+                        console.log("Clicked login button");
+                        return true;
+                    }} else {{
+                        console.log("Could not find login button");
                         return false;
-                    })()
-                    """,
-                    await_promise=True,
-                    return_by_value=True
-                )
+                    }}
+                }} catch (e) {{
+                    console.error("Error clicking login button:", e);
+                    return false;
+                }}
+            }})()
+            """,
+            await_promise=True,
+            return_by_value=True
+        )
+        
+        if not login_successful:
+            self.logger.error("JavaScript login approach failed")
+            raise InvalidCredentials("Could not find or interact with login form elements")
+        
+        # 5. Wait for successful login with increased patience
+        self.logger.debug("Waiting for login to complete...")
+        try:
+            # Try several selectors that might indicate successful login
+            await sleep(10)  # Increased wait time after login button click
+            
+            # Check if URL indicates success (redirected from login page)
+            current_url = await self.browser.main_tab.evaluate(
+                "window.location.href",
+                await_promise=True,
+                return_by_value=True
+            )
+            self.logger.debug(f"Current URL after login attempt: {current_url}")
+            
+            # Use comprehensive checks for successful login
+            login_successful = await self.browser.main_tab.evaluate(
+                """
+                (function() {
+                    // Check for ANY of these indicators of successful login
+                    
+                    // 1. URL indicates success - we're out of the login page
+                    const url = window.location.href.toLowerCase();
+                    if (url.includes('/chat') || !url.includes('/login') && 
+                        !url.includes('/signin') && !url.includes('/sign-in')) {
+                        console.log("Login seems successful based on URL");
+                        return true;
+                    }
+                    
+                    // 2. UI elements that indicate successful login
+                    const userElements = document.querySelectorAll(
+                        'textarea, div[contenteditable="true"], ' +
+                        'div[class*="avatar"], div[class*="profile"], ' +
+                        'div[class*="chat"], div[class*="message"]'
+                    );
+                    
+                    if (userElements.length > 0) {
+                        console.log("Found user/chat interface elements");
+                        return true;
+                    }
+                    
+                    // 3. Login form is gone
+                    if (!document.querySelector('input[type="password"]')) {
+                        console.log("Password field is gone, likely logged in");
+                        return true;
+                    }
+                    
+                    // 4. Check for error messages
+                    const errorMessages = Array.from(document.querySelectorAll('div, p, span'))
+                        .filter(el => {
+                            const text = el.textContent.toLowerCase();
+                            return text.includes('invalid') || 
+                                   text.includes('incorrect') || 
+                                   text.includes('failed') || 
+                                   text.includes('wrong');
+                        });
+                    
+                    if (errorMessages.length > 0) {
+                        console.log("Found error messages:", errorMessages[0].textContent);
+                        return false;
+                    }
+                    
+                    console.log("No clear indicators of login success or failure");
+                    return false;
+                })()
+                """,
+                await_promise=True,
+                return_by_value=True
+            )
             
             if login_successful:
-                self.logger.debug("Login successful - authenticated interface detected")
+                self.logger.debug("Login appears successful!")
                 
-                # If we're on a welcome/onboarding page, we need to navigate to the chat
-                try:
-                    if not await self.find_textbox():
-                        self.logger.debug("No textbox found on current page, attempting to navigate to chat")
-                        
-                        # Try to find a "Start Chat" or similar button
-                        start_chat_clicked = await self.browser.main_tab.evaluate(
-                            """
-                            (function() {
-                                // Find buttons that might lead to chat
-                                const chatButtons = Array.from(
-                                    document.querySelectorAll('button, div[role="button"], a')
-                                ).filter(el => {
-                                    const text = el.textContent.toLowerCase();
-                                    return (
-                                        text.includes('start') || 
-                                        text.includes('chat') || 
-                                        text.includes('continue') || 
-                                        text.includes('next') ||
-                                        text.includes('begin')
-                                    );
-                                });
-                                
-                                if (chatButtons.length > 0) {
-                                    chatButtons[0].click();
-                                    return true;
-                                }
-                                
-                                // As a fallback, try to navigate directly to chat URL
-                                try {
-                                    window.location.href = 'https://chat.deepseek.com/';
-                                    return true;
-                                } catch (e) {
-                                    return false;
-                                }
-                            })()
-                            """,
-                            await_promise=True,
-                            return_by_value=True
-                        )
-                        
-                        if start_chat_clicked:
-                            self.logger.debug("Clicked a button to navigate to chat")
-                            await sleep(5)  # Wait for navigation
-                        else:
-                            self.logger.debug("No chat navigation button found, trying direct URL")
-                            await self.browser.main_tab.get("https://chat.deepseek.com/")
-                            await sleep(5)
+                # If we're on a welcome page, navigate to chat
+                if not await self.find_textbox():
+                    self.logger.debug("No chatbox found, attempting to navigate to main chat interface")
                     
-                    # Now check again for textbox
+                    # Navigate to chat page directly
+                    await self.browser.main_tab.get("https://chat.deepseek.com/")
+                    await sleep(5)  # Wait for navigation
+                    
+                    # Check if we now have a textbox
                     if await self.find_textbox():
-                        self.logger.debug("Chat textbox found after navigation")
+                        self.logger.debug("Successfully navigated to chat interface")
                     else:
-                        self.logger.debug("Still no textbox found, but login appears successful")
-                except Exception as e:
-                    self.logger.error(f"Error while trying to navigate to chat: {str(e)}")
-                    # Continue anyway as login might be successful
+                        self.logger.debug("Navigation to chat interface didn't show textbox, but login appears successful")
             else:
-                # Check for error messages
-                error_present = await self.browser.main_tab.evaluate(
+                self.logger.error("Login unsuccessful - couldn't detect success indicators")
+                
+                # Check specifically for credential errors
+                credential_error = await self.browser.main_tab.evaluate(
                     """
                     (function() {
-                        const errorElements = document.querySelectorAll(
-                            'div[class*="error"], p[class*="error"], span[class*="error"], .notification-error, .error-message'
-                        );
-                        for (const el of errorElements) {
-                            if (el.textContent && (
-                                el.textContent.includes('incorrect') || 
-                                el.textContent.includes('invalid') ||
-                                el.textContent.includes('failed') ||
-                                el.textContent.includes('wrong'))) {
-                                return el.textContent.trim();
-                            }
-                        }
-                        return false;
+                        const errorMessages = Array.from(document.querySelectorAll('div, p, span'))
+                            .filter(el => {
+                                const text = el.textContent.toLowerCase();
+                                return text.includes('password') || 
+                                       text.includes('email') || 
+                                       text.includes('account');
+                            })
+                            .map(el => el.textContent.trim())
+                            .filter(text => 
+                                text.includes('invalid') || 
+                                text.includes('incorrect') || 
+                                text.includes('wrong') ||
+                                text.includes('failed')
+                            );
+                        
+                        return errorMessages.length > 0 ? errorMessages[0] : null;
                     })()
                     """,
                     await_promise=True,
                     return_by_value=True
                 )
                 
-                if error_present:
-                    self.logger.error(f"Login error detected: {error_present}")
-                    raise InvalidCredentials(f"Login error: {error_present}")
+                if credential_error:
+                    raise InvalidCredentials(f"Login error: {credential_error}")
                 else:
-                    self.logger.error("Login failed - could not detect login success")
+                    # Try forced navigation as last resort
+                    self.logger.debug("Attempting forced navigation to chat as last resort")
+                    await self.browser.main_tab.get("https://chat.deepseek.com/")
+                    await sleep(5)
                     
-                    # Capture full page source for detailed debugging
-                    page_html = await self.browser.main_tab.evaluate(
-                        "document.documentElement.outerHTML",
-                        await_promise=True,
-                        return_by_value=True
-                    )
-                    
-                    self.logger.debug(f"Failed login page structure, size: {len(page_html)} bytes")
-                    self.logger.debug(f"Current URL: {await self.browser.main_tab.evaluate('window.location.href', await_promise=True, return_by_value=True)}")
-                    
-                    # Last attempt: try forced navigation to chat
-                    try:
-                        self.logger.debug("Attempting forced navigation to chat as last resort")
-                        await self.browser.main_tab.get("https://chat.deepseek.com/")
-                        await sleep(5)
-                        
-                        if await self.find_textbox():
-                            self.logger.debug("Found textbox after forced navigation - login was likely successful")
-                            login_successful = True
-                        else:
-                            error_msg = "The email or password is incorrect" if not token_failed else "Both token and email/password are incorrect"
-                            raise InvalidCredentials(error_msg)
-                    except InvalidCredentials:
-                        raise
-                    except Exception as e:
-                        self.logger.error(f"Final navigation attempt failed: {str(e)}")
+                    # Check again for textbox after forced navigation
+                    if await self.find_textbox():
+                        self.logger.debug("Found textbox after forced navigation - login was successful despite errors")
+                        login_successful = True
+                    else:
                         error_msg = "The email or password is incorrect" if not token_failed else "Both token and email/password are incorrect"
                         raise InvalidCredentials(error_msg)
+                        
         except InvalidCredentials:
-            # Re-raise the specific exception
             raise
         except Exception as e:
-            self.logger.error(f"Error while checking login status: {str(e)}")
-            
-            # Capture page source after failed login for debugging
-            try:
-                failed_page = await self.browser.main_tab.evaluate(
-                    "document.body.innerHTML",
-                    await_promise=True,
-                    return_by_value=True
-                )
-                self.logger.debug(f"Failed login page structure, size: {len(failed_page)} bytes")
-            except:
-                pass
-                
-            # Try forced navigation as last resort
-            try:
-                self.logger.debug("Attempting forced navigation to chat as last resort after error")
-                await self.browser.main_tab.get("https://chat.deepseek.com/")
-                await sleep(5)
-                
-                if await self.find_textbox():
-                    self.logger.debug("Found textbox after forced navigation - login was successful despite errors")
-                    login_successful = True
-                else:
-                    error_msg = "The email or password is incorrect" if not token_failed else "Both token and email/password are incorrect"
-                    raise InvalidCredentials(error_msg)
-            except InvalidCredentials:
-                raise
-            except Exception as nav_error:
-                self.logger.error(f"Final navigation attempt failed: {str(nav_error)}")
-                error_msg = "The email or password is incorrect" if not token_failed else "Both token and email/password are incorrect"
-                raise InvalidCredentials(error_msg)
-
+            self.logger.error(f"Error during login process: {str(e)}")
+            error_msg = "The email or password is incorrect" if not token_failed else "Both token and email/password are incorrect"
+            raise InvalidCredentials(error_msg)
+    
         self.logger.debug(f"Logged in successfully using email and password! {'(Token method failed)' if token_failed else ''}")
                 
     async def _find_child_by_text(
