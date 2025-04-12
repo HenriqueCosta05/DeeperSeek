@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 class LoginSelectors:
     email_input: str = 'input[type="text"]'
     password_input: str = 'input[type="password"]'
-    confirm_checkbox: str = 'div[class="ds-checkbox ds-checkbox--none ds-checkbox--bordered"]'
+    # Removed confirm_checkbox reference
     login_button: str = 'div[role="button"]'
 
 @dataclass
