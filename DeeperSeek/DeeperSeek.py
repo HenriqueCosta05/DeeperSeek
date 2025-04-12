@@ -215,19 +215,9 @@ class DeepSeek:
         
         self.logger.debug("Attempting to login with email and password...")
             
-        # 1. Capture page source for debugging
+        # 1. Wait longer for the page to fully load
         try:
-            page_source = await self.browser.main_tab.evaluate(
-                    "document.body.innerHTML",
-                    await_promise=True,
-                    return_by_value=True
-                )
-            self.logger.debug(f"Login page structure found, size: {len(page_source)} bytes")
-        except Exception as e:
-            self.logger.error(f"Failed to get page source: {str(e)}")
-        
-        # 2. Wait for the page to be fully loaded
-        try:
+            await sleep(3)  # Add a small delay to ensure page is loaded
             await self.browser.main_tab.evaluate(
                 "document.readyState === 'complete'",
                 await_promise=True,
@@ -237,39 +227,132 @@ class DeepSeek:
         except Exception as e:
             self.logger.error(f"Page loading check failed: {str(e)}")
             
-        # 3. Find and interact with the email input
+        # 2. Capture page source for debugging
         try:
-            self.logger.debug(f"Looking for email input with selector: {self.selectors.login.email_input}")
-            email_input = await self.browser.main_tab.select(self.selectors.login.email_input, timeout=10)
-            self.logger.debug("Email input found")
-            await email_input.send_keys(self._email)
-            self.logger.debug("Email entered successfully")
+            page_source = await self.browser.main_tab.evaluate(
+                    "document.body.innerHTML",
+                    await_promise=True,
+                    return_by_value=True
+                )
+            self.logger.debug(f"Login page structure found, size: {len(page_source)} bytes")
+            
+            # Look for login form elements
+            login_form_exists = await self.browser.main_tab.evaluate(
+                """
+                !!document.querySelector('input[type="text"]') && 
+                !!document.querySelector('input[type="password"]')
+                """,
+                await_promise=True,
+                return_by_value=True
+            )
+            self.logger.debug(f"Login form detected: {login_form_exists}")
+        except Exception as e:
+            self.logger.error(f"Failed to get page source: {str(e)}")
+        
+        # 3. Find and interact with the email input - use more generic selector
+        try:
+            self.logger.debug("Looking for email input field...")
+            email_input = await self.browser.main_tab.evaluate(
+                """
+                (function() {
+                    // Try different methods to find the email field
+                    const emailField = document.querySelector('input[type="text"]') || 
+                                       document.querySelector('input[type="email"]') ||
+                                       document.querySelector('input[placeholder*="email" i]');
+                    if (emailField) {
+                        emailField.focus();
+                        return true;
+                    }
+                    return false;
+                })()
+                """,
+                await_promise=True,
+                return_by_value=True
+            )
+            
+            if email_input:
+                self.logger.debug("Email input found via JS, entering email...")
+                await self.browser.main_tab.evaluate(
+                    f'document.activeElement.value = "{self._email}";',
+                    await_promise=True,
+                    return_by_value=True
+                )
+                self.logger.debug("Email entered successfully")
+            else:
+                self.logger.error("Could not find email input field with JavaScript")
+                raise InvalidCredentials("Could not find email input field")
         except Exception as e:
             self.logger.error(f"Failed to enter email: {str(e)}")
             raise InvalidCredentials(f"Could not find email input field: {str(e)}")
         
         # 4. Find and interact with the password input
         try:
-            self.logger.debug(f"Looking for password input with selector: {self.selectors.login.password_input}")
-            password_input = await self.browser.main_tab.select(self.selectors.login.password_input, timeout=10)
-            self.logger.debug("Password input found")
-            await password_input.send_keys(self._password)
-            self.logger.debug("Password entered successfully")
+            self.logger.debug("Looking for password input field...")
+            password_input = await self.browser.main_tab.evaluate(
+                """
+                (function() {
+                    // Try to find and focus the password field
+                    const pwField = document.querySelector('input[type="password"]');
+                    if (pwField) {
+                        pwField.focus();
+                        return true;
+                    }
+                    return false;
+                })()
+                """,
+                await_promise=True,
+                return_by_value=True
+            )
+            
+            if password_input:
+                self.logger.debug("Password input found via JS, entering password...")
+                await self.browser.main_tab.evaluate(
+                    f'document.activeElement.value = "{self._password}";',
+                    await_promise=True,
+                    return_by_value=True
+                )
+                self.logger.debug("Password entered successfully")
+            else:
+                self.logger.error("Could not find password input field with JavaScript")
+                raise InvalidCredentials("Could not find password input field")
         except Exception as e:
             self.logger.error(f"Failed to enter password: {str(e)}")
             raise InvalidCredentials(f"Could not find password input field: {str(e)}")
         
-        # 5. Try using JavaScript to handle any checkbox that might be present
-        # This is more flexible and doesn't rely on specific selectors
+        # 5. Handle any checkbox in a more robust way
         try:
             self.logger.debug("Attempting to check any required checkboxes via JavaScript...")
             await self.browser.main_tab.evaluate(
                 """
-                // Find and click any checkbox on the login page
-                const checkboxes = document.querySelectorAll('input[type="checkbox"], div[class*="checkbox"], div[class*="ds-checkbox"]');
-                for (const checkbox of checkboxes) {
-                    checkbox.click();
-                }
+                // More comprehensive checkbox finder and clicker
+                (function() {
+                    // Find all possible checkbox elements
+                    const checkboxSelectors = [
+                        'input[type="checkbox"]', 
+                        'div[class*="checkbox"]', 
+                        'div[class*="ds-checkbox"]',
+                        'label.checkbox',
+                        '*[role="checkbox"]'
+                    ];
+                    
+                    // Try each selector
+                    for (const selector of checkboxSelectors) {
+                        const elements = document.querySelectorAll(selector);
+                        if (elements.length > 0) {
+                            console.log('Found checkbox elements with selector: ' + selector);
+                            // Click all found elements
+                            elements.forEach(el => {
+                                try {
+                                    el.click();
+                                    console.log('Clicked checkbox element');
+                                } catch (e) {
+                                    console.log('Error clicking checkbox:', e);
+                                }
+                            });
+                        }
+                    }
+                    return true;
+                })()
                 """,
                 await_promise=True,
                 return_by_value=True
@@ -279,24 +362,141 @@ class DeepSeek:
             self.logger.error(f"JavaScript checkbox handling failed: {str(e)}")
             # Continue anyway as the checkbox might not be required
         
-        # 6. Find and click the login button
+        # 6. Find and click the login button using a more robust approach
         try:
-            self.logger.debug(f"Looking for login button with selector: {self.selectors.login.login_button}")
-            login_button = await self.browser.main_tab.select(self.selectors.login.login_button, timeout=10)
-            self.logger.debug("Login button found")
-            await login_button.click()
-            self.logger.debug("Login button clicked")
+            self.logger.debug("Looking for login button...")
+            button_clicked = await self.browser.main_tab.evaluate(
+                """
+                (function() {
+                    // Try multiple approaches to find the login button
+                    const buttonSelectors = [
+                        'button[type="submit"]',
+                        'div[role="button"]',
+                        'button:not([disabled])',
+                        'input[type="submit"]',
+                        'a.login-button',
+                        // Text-based selectors
+                        'button:contains("Login")', 
+                        'button:contains("Sign In")',
+                        'div[role="button"]:contains("Login")',
+                        'div[role="button"]:contains("Sign In")'
+                    ];
+                    
+                    // Custom contains selector implementation
+                    function findElementsWithText(selector, text) {
+                        const elements = document.querySelectorAll(selector);
+                        return Array.from(elements).filter(el => 
+                            el.textContent.toLowerCase().includes(text.toLowerCase()));
+                    }
+                    
+                    // Try standard selectors
+                    for (const selector of buttonSelectors) {
+                        if (selector.includes(':contains(')) {
+                            // Handle our custom text-based selector
+                            const [baseSelector, textToFind] = selector.split(':contains(');
+                            const text = textToFind.replace('"', '').replace('")', '');
+                            const elements = findElementsWithText(baseSelector, text);
+                            if (elements.length > 0) {
+                                elements[0].click();
+                                return true;
+                            }
+                        } else {
+                            // Standard selector
+                            const elements = document.querySelectorAll(selector);
+                            if (elements.length > 0) {
+                                elements[0].click();
+                                return true;
+                            }
+                        }
+                    }
+                    
+                    // If nothing found, look for any button-like element
+                    const allButtons = document.querySelectorAll('button, [role="button"], input[type="submit"]');
+                    if (allButtons.length > 0) {
+                        // Click the last button as it's often the submit button
+                        allButtons[allButtons.length - 1].click();
+                        return true;
+                    }
+                    
+                    return false;
+                })()
+                """,
+                await_promise=True,
+                return_by_value=True
+            )
+            
+            if button_clicked:
+                self.logger.debug("Login button found and clicked via JS")
+            else:
+                self.logger.error("Could not find login button with JavaScript")
+                raise InvalidCredentials("Could not find or click login button")
         except Exception as e:
             self.logger.error(f"Failed to click login button: {str(e)}")
             raise InvalidCredentials(f"Could not find or click login button: {str(e)}")
         
-        # 7. Wait for successful login
+        # 7. Wait for successful login with increased patience
         self.logger.debug("Waiting for login to complete...")
         try:
-            await self.browser.main_tab.wait_for(self.selectors.interactions.textbox, timeout=15)  # Increased timeout
-            self.logger.debug("Login successful - textbox found")
+            # Try several selectors that might indicate successful login
+            await sleep(5)  # Give the page time to process login
+            
+            login_successful = await self.browser.main_tab.evaluate(
+                """
+                (function() {
+                    // Check for textbox
+                    const textboxElements = document.querySelectorAll('textarea');
+                    if (textboxElements.length > 0) return true;
+                    
+                    // Check for other indicators of successful login
+                    const chatElements = document.querySelectorAll('div[class*="chat"], div[class*="message"]');
+                    if (chatElements.length > 0) return true;
+                    
+                    // Check URL for indicators we're in the chat area
+                    if (window.location.href.includes('/chat/')) return true;
+                    
+                    return false;
+                })()
+                """,
+                await_promise=True,
+                return_by_value=True
+            )
+            
+            if login_successful:
+                self.logger.debug("Login successful - chat interface detected")
+            else:
+                # Check for error messages
+                error_present = await self.browser.main_tab.evaluate(
+                    """
+                    (function() {
+                        const errorElements = document.querySelectorAll(
+                            'div[class*="error"], p[class*="error"], span[class*="error"]'
+                        );
+                        for (const el of errorElements) {
+                            if (el.textContent.includes('incorrect') || 
+                                el.textContent.includes('invalid') ||
+                                el.textContent.includes('failed')) {
+                                return el.textContent;
+                            }
+                        }
+                        return false;
+                    })()
+                    """,
+                    await_promise=True,
+                    return_by_value=True
+                )
+                
+                if error_present:
+                    self.logger.error(f"Login error detected: {error_present}")
+                    raise InvalidCredentials(f"Login error: {error_present}")
+                else:
+                    self.logger.error("Login failed - could not find chat interface")
+                    error_msg = "The email or password is incorrect" if not token_failed else "Both token and email/password are incorrect"
+                    raise InvalidCredentials(error_msg)
+        except InvalidCredentials:
+            # Re-raise the specific exception
+            raise
         except Exception as e:
-            self.logger.error(f"Login failed - could not find textbox: {str(e)}")
+            self.logger.error(f"Error while checking login status: {str(e)}")
             
             # Capture page source after failed login for debugging
             try:
@@ -313,7 +513,6 @@ class DeepSeek:
             raise InvalidCredentials(error_msg)
         
         self.logger.debug(f"Logged in successfully using email and password! {'(Token method failed)' if token_failed else ''}")
-    
     async def _dev_debug(self) -> None:
         """A method for debugging purposes.
         
