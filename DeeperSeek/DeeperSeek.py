@@ -199,7 +199,7 @@ class DeepSeek:
         
     async def _login_classic(self, token_failed: bool = False) -> None:
         """Logs in to DeepSeek using email and password.
-
+    
         Args
         ---------
             token_failed (bool): Indicates whether the token login attempt failed.
@@ -209,32 +209,124 @@ class DeepSeek:
             MissingInitialization: If the initialize method is not run before using this method.
             InvalidCredentials: If the email or password is incorrect.
         """
-
+    
         if not self._initialized:
             raise MissingInitialization("You must run the initialize method before using this method.")
-
-        self.logger.debug("Entering the email and password...")
-        email_input = await self.browser.main_tab.select(self.selectors.login.email_input)
-        await email_input.send_keys(self._email)
-
-        password_input = await self.browser.main_tab.select(self.selectors.login.password_input)
-        await password_input.send_keys(self._password)
-
-        self.logger.debug("Checking the confirm checkbox and logging in...")
-        confirm_checkbox = await self.browser.main_tab.select(self.selectors.login.confirm_checkbox)
-        await confirm_checkbox.click()
-
-        login_button = await self.browser.main_tab.select(self.selectors.login.login_button)
-        await login_button.click()
-
+        
+        self.logger.debug("Attempting to login with email and password...")
+            
+            # 1. Capture page source for debugging
         try:
-            await self.browser.main_tab.wait_for(self.selectors.interactions.textbox, timeout = 5)
-        except:
-            raise InvalidCredentials("The email or password is incorrect" \
-                if not token_failed else "Both token and email/password are incorrect")
-
+            page_source = await self.browser.main_tab.evaluate(
+                    "document.body.innerHTML",
+                    await_promise=True,
+                    return_by_value=True
+                )
+            self.logger.debug(f"Login page structure found, size: {len(page_source)} bytes")
+        except Exception as e:
+            self.logger.error(f"Failed to get page source: {str(e)}")
+        
+            # 2. Wait for the page to be fully loaded
+        try:
+                await self.browser.main_tab.evaluate(
+                    "document.readyState === 'complete'",
+                    await_promise=True,
+                    return_by_value=True
+                )
+                self.logger.debug("Page loading complete")
+        except Exception as e:
+                self.logger.error(f"Page loading check failed: {str(e)}")
+            
+            # 3. Find and interact with the email input
+        try:
+                self.logger.debug(f"Looking for email input with selector: {self.selectors.login.email_input}")
+                email_input = await self.browser.main_tab.select(self.selectors.login.email_input, timeout=10)
+                self.logger.debug("Email input found")
+                await email_input.send_keys(self._email)
+                self.logger.debug("Email entered successfully")
+        except Exception as e:
+                self.logger.error(f"Failed to enter email: {str(e)}")
+                raise InvalidCredentials(f"Could not find email input field: {str(e)}")
+        
+            # 4. Find and interact with the password input
+        try:
+                self.logger.debug(f"Looking for password input with selector: {self.selectors.login.password_input}")
+                password_input = await self.browser.main_tab.select(self.selectors.login.password_input, timeout=10)
+                self.logger.debug("Password input found")
+                await password_input.send_keys(self._password)
+                self.logger.debug("Password entered successfully")
+        except Exception as e:
+                self.logger.error(f"Failed to enter password: {str(e)}")
+                raise InvalidCredentials(f"Could not find password input field: {str(e)}")
+        
+            # 5. Handle the checkbox with multiple approaches
+        try:
+                self.logger.debug(f"Looking for checkbox with selector: {self.selectors.login.confirm_checkbox}")
+                
+                # First approach: direct selector
+                try:
+                    confirm_checkbox = await self.browser.main_tab.select(self.selectors.login.confirm_checkbox, timeout=5)
+                    self.logger.debug("Confirm checkbox found using direct selector")
+                except:
+                    # Second approach: try using JavaScript to find and click it
+                    self.logger.debug("Direct selector failed, trying JavaScript approach")
+                    checkbox_clicked = await self.browser.main_tab.evaluate(
+                        """
+                        const checkboxes = document.querySelectorAll('div[class*="ds-checkbox"]');
+                        if (checkboxes.length > 0) {
+                            checkboxes[0].click();
+                            return true;
+                        }
+                        return false;
+                        """,
+                        await_promise=True,
+                        return_by_value=True
+                    )
+                    
+                    if not checkbox_clicked:
+                        self.logger.debug("JavaScript approach failed, trying to proceed without checkbox")
+                else:
+                    await confirm_checkbox.click()
+                    self.logger.debug("Checkbox clicked successfully")
+                    
+        except Exception as e:
+                self.logger.error(f"Checkbox handling failed: {str(e)}")
+                # Continue anyway - some login pages may not have the checkbox
+        
+            # 6. Find and click the login button
+        try:
+                self.logger.debug(f"Looking for login button with selector: {self.selectors.login.login_button}")
+                login_button = await self.browser.main_tab.select(self.selectors.login.login_button, timeout=10)
+                self.logger.debug("Login button found")
+                await login_button.click()
+                self.logger.debug("Login button clicked")
+        except Exception as e:
+                self.logger.error(f"Failed to click login button: {str(e)}")
+                raise InvalidCredentials(f"Could not find or click login button: {str(e)}")
+        
+            # 7. Wait for successful login
+        self.logger.debug("Waiting for login to complete...")
+        try:
+                await self.browser.main_tab.wait_for(self.selectors.interactions.textbox, timeout=15)  # Increased timeout
+                self.logger.debug("Login successful - textbox found")
+        except Exception as e:
+                self.logger.error(f"Login failed - could not find textbox: {str(e)}")
+                
+                # Capture page source after failed login for debugging
+                try:
+                    failed_page = await self.browser.main_tab.evaluate(
+                        "document.body.innerHTML",
+                        await_promise=True,
+                        return_by_value=True
+                    )
+                    self.logger.debug(f"Failed login page structure, size: {len(failed_page)} bytes")
+                except:
+                    pass
+                    
+                error_msg = "The email or password is incorrect" if not token_failed else "Both token and email/password are incorrect"
+                raise InvalidCredentials(error_msg)
+        
         self.logger.debug(f"Logged in successfully using email and password! {'(Token method failed)' if token_failed else ''}")
-    
     async def _dev_debug(self) -> None:
         """A method for debugging purposes.
         
