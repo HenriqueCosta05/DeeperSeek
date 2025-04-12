@@ -434,48 +434,149 @@ class DeepSeek:
             self.logger.error(f"Failed to click login button: {str(e)}")
             raise InvalidCredentials(f"Could not find or click login button: {str(e)}")
         
+        # Replace lines around 392-451 (the section for waiting for successful login)
+
         # 7. Wait for successful login with increased patience
         self.logger.debug("Waiting for login to complete...")
         try:
             # Try several selectors that might indicate successful login
-            await sleep(5)  # Give the page time to process login
+            await sleep(10)  # Increased wait time after login button click
             
-            login_successful = await self.browser.main_tab.evaluate(
+            # First check if we're redirected to a different URL that indicates success
+            current_url = await self.browser.main_tab.evaluate(
+                "window.location.href",
+                await_promise=True,
+                return_by_value=True
+            )
+            self.logger.debug(f"Current URL after login: {current_url}")
+            
+            # Check if URL indicates we're past login screen (could be welcome, chat, or dashboard)
+            url_indicates_success = await self.browser.main_tab.evaluate(
                 """
                 (function() {
-                    // Check for textbox
-                    const textboxElements = document.querySelectorAll('textarea');
-                    if (textboxElements.length > 0) return true;
-                    
-                    // Check for other indicators of successful login
-                    const chatElements = document.querySelectorAll('div[class*="chat"], div[class*="message"]');
-                    if (chatElements.length > 0) return true;
-                    
-                    // Check URL for indicators we're in the chat area
-                    if (window.location.href.includes('/chat/')) return true;
-                    
-                    return false;
+                    const url = window.location.href;
+                    // Check for various success indicators in URL
+                    return url.includes('/chat') || 
+                        url.includes('/welcome') || 
+                        url.includes('/dashboard') ||
+                        url.includes('/home') ||
+                        !url.includes('/login');
                 })()
                 """,
                 await_promise=True,
                 return_by_value=True
             )
             
+            if url_indicates_success:
+                self.logger.debug("Login appears successful based on URL change")
+                login_successful = True
+            else:
+                # If URL doesn't indicate success, look for UI elements
+                login_successful = await self.browser.main_tab.evaluate(
+                    """
+                    (function() {
+                        // Check for ANY of these indicators of successful login
+                        
+                        // 1. Check for any textbox
+                        if (document.querySelectorAll('textarea').length > 0) return true;
+                        
+                        // 2. Check for elements that would only be shown to logged-in users
+                        if (document.querySelectorAll('div[class*="profile"], div[class*="avatar"], div[class*="user"]').length > 0) return true;
+                        
+                        // 3. Check for chat-related elements
+                        if (document.querySelectorAll('div[class*="chat"], div[class*="message"], div[class*="conversation"]').length > 0) return true;
+                        
+                        // 4. Check for welcome screens or onboarding elements
+                        if (document.querySelectorAll('div[class*="welcome"], div[class*="onboarding"], div[class*="getting-started"]').length > 0) return true;
+                        
+                        // 5. Check for navigation elements that appear post-login
+                        if (document.querySelectorAll('div[class*="sidebar"], div[class*="nav"], div[class*="menu"]').length > 0) return true;
+                        
+                        // 6. Check if login form is gone
+                        if (!document.querySelector('input[type="password"]')) return true;
+                        
+                        return false;
+                    })()
+                    """,
+                    await_promise=True,
+                    return_by_value=True
+                )
+            
             if login_successful:
-                self.logger.debug("Login successful - chat interface detected")
+                self.logger.debug("Login successful - authenticated interface detected")
+                
+                # If we're on a welcome/onboarding page, we need to navigate to the chat
+                try:
+                    if not await self.find_textbox():
+                        self.logger.debug("No textbox found on current page, attempting to navigate to chat")
+                        
+                        # Try to find a "Start Chat" or similar button
+                        start_chat_clicked = await self.browser.main_tab.evaluate(
+                            """
+                            (function() {
+                                // Find buttons that might lead to chat
+                                const chatButtons = Array.from(
+                                    document.querySelectorAll('button, div[role="button"], a')
+                                ).filter(el => {
+                                    const text = el.textContent.toLowerCase();
+                                    return (
+                                        text.includes('start') || 
+                                        text.includes('chat') || 
+                                        text.includes('continue') || 
+                                        text.includes('next') ||
+                                        text.includes('begin')
+                                    );
+                                });
+                                
+                                if (chatButtons.length > 0) {
+                                    chatButtons[0].click();
+                                    return true;
+                                }
+                                
+                                // As a fallback, try to navigate directly to chat URL
+                                try {
+                                    window.location.href = 'https://chat.deepseek.com/';
+                                    return true;
+                                } catch (e) {
+                                    return false;
+                                }
+                            })()
+                            """,
+                            await_promise=True,
+                            return_by_value=True
+                        )
+                        
+                        if start_chat_clicked:
+                            self.logger.debug("Clicked a button to navigate to chat")
+                            await sleep(5)  # Wait for navigation
+                        else:
+                            self.logger.debug("No chat navigation button found, trying direct URL")
+                            await self.browser.main_tab.get("https://chat.deepseek.com/")
+                            await sleep(5)
+                    
+                    # Now check again for textbox
+                    if await self.find_textbox():
+                        self.logger.debug("Chat textbox found after navigation")
+                    else:
+                        self.logger.debug("Still no textbox found, but login appears successful")
+                except Exception as e:
+                    self.logger.error(f"Error while trying to navigate to chat: {str(e)}")
+                    # Continue anyway as login might be successful
             else:
                 # Check for error messages
                 error_present = await self.browser.main_tab.evaluate(
                     """
                     (function() {
                         const errorElements = document.querySelectorAll(
-                            'div[class*="error"], p[class*="error"], span[class*="error"]'
+                            'div[class*="error"], p[class*="error"], span[class*="error"], .notification-error, .error-message'
                         );
                         for (const el of errorElements) {
-                            if (el.textContent.includes('incorrect') || 
+                            if (el.textContent && (
+                                el.textContent.includes('incorrect') || 
                                 el.textContent.includes('invalid') ||
-                                el.textContent.includes('failed')) {
-                                return el.textContent;
+                                el.textContent.includes('failed') ||
+                                el.textContent.includes('wrong'))) {
+                                return el.textContent.trim();
                             }
                         }
                         return false;
@@ -489,9 +590,36 @@ class DeepSeek:
                     self.logger.error(f"Login error detected: {error_present}")
                     raise InvalidCredentials(f"Login error: {error_present}")
                 else:
-                    self.logger.error("Login failed - could not find chat interface")
-                    error_msg = "The email or password is incorrect" if not token_failed else "Both token and email/password are incorrect"
-                    raise InvalidCredentials(error_msg)
+                    self.logger.error("Login failed - could not detect login success")
+                    
+                    # Capture full page source for detailed debugging
+                    page_html = await self.browser.main_tab.evaluate(
+                        "document.documentElement.outerHTML",
+                        await_promise=True,
+                        return_by_value=True
+                    )
+                    
+                    self.logger.debug(f"Failed login page structure, size: {len(page_html)} bytes")
+                    self.logger.debug(f"Current URL: {await self.browser.main_tab.evaluate('window.location.href', await_promise=True, return_by_value=True)}")
+                    
+                    # Last attempt: try forced navigation to chat
+                    try:
+                        self.logger.debug("Attempting forced navigation to chat as last resort")
+                        await self.browser.main_tab.get("https://chat.deepseek.com/")
+                        await sleep(5)
+                        
+                        if await self.find_textbox():
+                            self.logger.debug("Found textbox after forced navigation - login was likely successful")
+                            login_successful = True
+                        else:
+                            error_msg = "The email or password is incorrect" if not token_failed else "Both token and email/password are incorrect"
+                            raise InvalidCredentials(error_msg)
+                    except InvalidCredentials:
+                        raise
+                    except Exception as e:
+                        self.logger.error(f"Final navigation attempt failed: {str(e)}")
+                        error_msg = "The email or password is incorrect" if not token_failed else "Both token and email/password are incorrect"
+                        raise InvalidCredentials(error_msg)
         except InvalidCredentials:
             # Re-raise the specific exception
             raise
@@ -509,35 +637,27 @@ class DeepSeek:
             except:
                 pass
                 
-            error_msg = "The email or password is incorrect" if not token_failed else "Both token and email/password are incorrect"
-            raise InvalidCredentials(error_msg)
-        
-        self.logger.debug(f"Logged in successfully using email and password! {'(Token method failed)' if token_failed else ''}")
-    async def _dev_debug(self) -> None:
-        """A method for debugging purposes.
-        
-        Raises
-        ---------
-            MissingInitialization: If the initialize method is not run before using this method.
-        """
-
-        if not self._initialized:
-            raise MissingInitialization("You must run the initialize method before using this method.")
-    
-        while True:
-            class_id = input("Enter the class id [e to exit]: ")
-            if class_id == "e":
-                break
-
+            # Try forced navigation as last resort
             try:
-                element = await self.browser.main_tab.select(f'div[class="{class_id}"]', timeout = 3)
-            except:
-                print("Invalid class id")
-                continue
-            
-            print("breakpoint below")
-            breakpoint()
-        
+                self.logger.debug("Attempting forced navigation to chat as last resort after error")
+                await self.browser.main_tab.get("https://chat.deepseek.com/")
+                await sleep(5)
+                
+                if await self.find_textbox():
+                    self.logger.debug("Found textbox after forced navigation - login was successful despite errors")
+                    login_successful = True
+                else:
+                    error_msg = "The email or password is incorrect" if not token_failed else "Both token and email/password are incorrect"
+                    raise InvalidCredentials(error_msg)
+            except InvalidCredentials:
+                raise
+            except Exception as nav_error:
+                self.logger.error(f"Final navigation attempt failed: {str(nav_error)}")
+                error_msg = "The email or password is incorrect" if not token_failed else "Both token and email/password are incorrect"
+                raise InvalidCredentials(error_msg)
+
+        self.logger.debug(f"Logged in successfully using email and password! {'(Token method failed)' if token_failed else ''}")
+                
     async def _find_child_by_text(
         self,
         parent: zendriver.Element,
