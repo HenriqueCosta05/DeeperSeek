@@ -9,8 +9,8 @@ class LoginSelectors:
 
 @dataclass
 class InteractionSelectors:
-    textbox: str = 'textarea[class="c92459f0"]'
-    send_options_parent: str = 'div[class="ec4f5d61"]'
+    textbox: str = 'textarea[class="_27c9245"]'
+    send_options_parent: str = 'div[class="_6f28693"]'
     send_button: str = 'div[class="f6d670"]'
     response_toolbar: str = 'div[class="ds-flex abe97156"]'
     reset_chat_button: str = 'div[class="e214291b"]'
