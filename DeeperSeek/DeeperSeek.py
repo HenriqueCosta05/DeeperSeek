@@ -603,6 +603,7 @@ class DeepSeek:
             return_by_value = True
         )
 
+    
     async def send_message(
         self,
         message: str,
@@ -613,7 +614,7 @@ class DeepSeek:
         slow_mode_delay: float = 0.25
     ) -> Optional[Response]:
         """Sends a message to the DeepSeek chat.
-
+    
         Args
         ---------
             message (str): The message to send.
@@ -626,46 +627,63 @@ class DeepSeek:
                 - Sometimes a response may take longer than expected, so it's recommended to increase the timeout if necessary.
                 - Do note that the timeout increases by 20 seconds if deepthink is enabled, and by 60 seconds if search is enabled.
             slow_mode_delay (float): The delay between sending each character in slow mode.
-
+    
         Returns
         ---------
             Optional[Response]: The generated response from DeepSeek, or None if no response is received within the timeout
-
+    
         Raises
         ---------
             MissingInitialization: If the initialize method is not run before using this method.
         """
-
+    
         if not self._initialized:
             raise MissingInitialization("You must run the initialize method before using this method.")
-
+    
         timeout += 20 if deepthink else 0
         timeout += 60 if search else 0
-
+    
         self.logger.debug(f"Finding the textbox and sending the message: {message}")
-        textbox = await self.browser.main_tab.select(self.selectors.interactions.textbox)
+        
+        # Use dynamic element finder instead of fixed selector
+        textbox = await self.find_textbox()
+        
+        if not textbox:
+            self.logger.error("Could not find textbox")
+            raise CouldNotFindElement("Could not find textbox")
+            
         if slow_mode:
             for char in message:
                 await textbox.send_keys(char)
                 await sleep(slow_mode_delay)
         else:
             await textbox.send_keys(message)
-
-        # Find the parent div of both deepthink and search options
-        send_options_parent = await self.browser.main_tab.select(self.selectors.interactions.send_options_parent)
+    
+        # Find the DeepThink and search options
+        send_options = await self.find_send_options()
         
-        if deepthink != self._deepthink_enabled:
-            await send_options_parent.children[0].click() # DeepThink (R1)
-            self._deepthink_enabled = deepthink
+        # We need at least 2 options for DeepThink and Search
+        if len(send_options) >= 2:
+            # Assuming first option is DeepThink, second is Search (based on UI inspection)
+            if deepthink != self._deepthink_enabled and len(send_options) > 0:
+                await send_options[0].click()
+                self._deepthink_enabled = deepthink
+            
+            if search != self._search_enabled and len(send_options) > 1:
+                await send_options[1].click()
+                self._search_enabled = search
+        else:
+            self.logger.warning("Could not find DeepThink/Search options, proceeding without them")
+    
+        # Use dynamic finder for send button
+        send_button = await self.find_send_button()
+        if not send_button:
+            self.logger.error("Could not find send button")
+            raise CouldNotFindElement("Could not find send button")
         
-        if search != self._search_enabled:
-            await send_options_parent.children[1].click() # Search
-            self._search_enabled = search
-
-        send_button = await self.browser.main_tab.select(self.selectors.interactions.send_button)
         await send_button.click()
-
-        return await self._get_response(timeout = timeout)
+    
+        return await self._get_response(timeout=timeout)
 
     async def regenerate_response(self, timeout: int = 60) -> Optional[Response]:
         """Regenerates the response from DeepSeek.
@@ -733,18 +751,20 @@ class DeepSeek:
         
         return search_results
 
+        # Update the _get_response method
+    
     async def _get_response(
         self,
         timeout: int = 60,
         regen: bool = False,
     ) -> Optional[Response]:
         """Waits for and retrieves the response from DeepSeek.
-
+    
         Args
         ---------
             timeout (int): The maximum time to wait for the response.
             regen (bool): Whether the response is a regenerated response.
-
+    
         Returns
         ---------
             Optional[Response]: The generated response from DeepSeek, or None if no response is received within the timeout.
@@ -754,109 +774,220 @@ class DeepSeek:
             MissingInitialization: If the initialize method is not run before using this method.
             ServerDown: If the server is busy and the response is not generated.
         """
-
+    
         if not self._initialized:
             raise MissingInitialization("You must run the initialize method before using this method.")
-
+    
         end_time = time() + timeout
-
+    
+        # Find response elements dynamically
+        response_elements = await self.find_response_elements()
+        
         # Wait till the response starts generating
-        # If we don't wait for the response to start re/generating, we might get the previous response
         self.logger.debug("Waiting for the response to start generating..." if not regen \
             else "Waiting for the response to start regenerating...")
+        
+        generating_indicator = None
         while time() < end_time:
             try:
-                _ = await self.browser.main_tab.select(self.selectors.backend.response_generating if not regen \
-                    else self.selectors.backend.regen_loading_icon)
+                # Use dynamic finder or JavaScript check for response generation
+                is_generating = await self._find_element_by_js("""
+                (function() {
+                    // Look for loading indicators
+                    return !!document.querySelector('div[class*="loading"], div[class*="spinner"]');
+                })()
+                """)
+                
+                if is_generating:
+                    generating_indicator = True
+                    break
+                
+                await sleep(0.5)
             except:
-                continue
-            else:
-                break
+                await sleep(0.5)
         
-        if time() >= end_time:
-            return None
-
+        if time() >= end_time or not generating_indicator:
+            self.logger.warning("Could not detect generation starting within timeout")
+            # Continue anyway as we might still get a response
+        
         # Once the response starts generating, wait till it's generated
-        response_generated = None
-        self.logger.debug("Waiting for the response to finish generating..." if not regen \
-            else "Finding the last response...")
+        self.logger.debug("Waiting for the response to finish generating...")
+        
+        # Check for response being completed
+        response_text = None
         while time() < end_time:
             try:
-                response_generated: zendriver.Element = await self.browser.main_tab.select_all(
-                    self.selectors.backend.response_generated)
-            except:
-                continue
-
-            if response_generated:
-                break
+                # Check if response is complete by seeing if loading indicators are gone
+                is_still_generating = await self._find_element_by_js("""
+                (function() {
+                    return !!document.querySelector('div[class*="loading"], div[class*="spinner"]');
+                })()
+                """)
+                
+                if not is_still_generating:
+                    # Try to get the response content
+                    response_text = await self._find_element_by_js("""
+                    (function() {
+                        // Find message blocks which likely contain responses
+                        const messageBlocks = Array.from(document.querySelectorAll(
+                            'div[class*="message"], div[class*="chat-message"], div[class*="response"]'
+                        ));
+                        
+                        if (messageBlocks.length === 0) return null;
+                        
+                        // Get the last message which is likely the response
+                        const lastMessage = messageBlocks[messageBlocks.length - 1];
+                        
+                        // Extract text from all markdown blocks in the message
+                        const markdownBlocks = lastMessage.querySelectorAll(
+                            'div[class*="markdown"], pre, code, p'
+                        );
+                        
+                        if (markdownBlocks.length > 0) {
+                            return Array.from(markdownBlocks)
+                                .map(block => block.innerText || block.textContent)
+                                .join('\\n\\n');
+                        }
+                        
+                        // If no specific markdown blocks, just get all text
+                        return lastMessage.innerText || lastMessage.textContent;
+                    })()
+                    """)
+                    
+                    if response_text:
+                        break
+                
+                await sleep(1)
+            except Exception as e:
+                self.logger.debug(f"Error while checking response: {str(e)}")
+                await sleep(1)
         
-        if not response_generated:
+        if not response_text:
+            self.logger.warning("Could not extract response text within timeout")
             return None
-        
-        if regen:
-            # Wait till toolbar appears
-            self.logger.debug("Waiting for the response toolbar to appear...")
-            while time() < end_time:
-                # I need to keep refreshing the response_generated list because the elements change
-                try:
-                    response_generated: zendriver.Element = await self.browser.main_tab.select_all(
-                        self.selectors.backend.response_generated)
-                except Exception as e:
-                    continue
-
-                # Check if the toolbar is present
-                soup = BeautifulSoup(repr(response_generated[-1]), 'html.parser')
-                toolbar = soup.find("div", class_ = self.selectors.backend.response_toolbar_b64)
-                if not toolbar:
-                    continue
-
-                response_generated = await self.browser.main_tab.select_all(self.selectors.backend.response_generated)
-                break
-            
-            if time() >= end_time:
-                return None
-
-        self.logger.debug("Extracting the response text...")
-        soup = BeautifulSoup(repr(response_generated[-1]), 'html.parser')
-        markdown_blocks = soup.find_all("div", class_ = "ds-markdown ds-markdown--block")
-        response_text = "\n\n".join(get_text(str(block)).strip() for block in markdown_blocks)
-
+    
         if response_text.lower() == "the server is busy. please try again later.":
             raise ServerDown("The server is busy. Please try again later.")
-
+    
+        # Check for deepthink and search results
         search_results = None
         deepthink_duration = None
         deepthink_content = None
-
-        # 1 and 2 are the deepthink and search options
-        for child in response_generated[-1].children[1:3]:
-            if match(r"found \d+ results", child.text.lower()) and self._search_enabled:
-                self.logger.debug("Extracting the search results...")
-                # So this is a search result option, we need to click it and find the search results div
-                await child.click()
-
-                search_results = await self.browser.main_tab.select_all(self.selectors.interactions.search_results)
-                # First child is "Search Results". Second child is the actual search results
-                search_results_children = search_results[-1].children[1].children
-
-                search_results = self._filter_search_results(search_results_children)
-            
-            if match(r"thought for \d+(\.\d+)? seconds", child.text.lower()) and self._deepthink_enabled:
-                self.logger.debug("Extracting the deepthink duration and content...")
-                # This is the deepthink option, we can find the duration through splitting the text
-                deepthink_duration = int(child.text.split()[2])
+        
+        # Look for DeepThink content
+        if self._deepthink_enabled:
+            try:
+                deepthink_info = await self._find_element_by_js("""
+                (function() {
+                    // Look for DeepThink duration indicator (e.g., "Thought for X seconds")
+                    const durationElements = Array.from(document.querySelectorAll('div, span, p'))
+                        .filter(el => {
+                            const text = el.textContent.toLowerCase();
+                            return text.includes('thought for') && text.includes('seconds');
+                        });
+                    
+                    if (durationElements.length > 0) {
+                        const durationText = durationElements[0].textContent;
+                        const match = durationText.match(/thought for (\d+(\.\d+)?)/i);
+                        const duration = match ? parseInt(match[1]) : null;
+                        
+                        // Look for DeepThink content
+                        const parentContainer = durationElements[0].closest('div[class*="container"], div[class*="message"]');
+                        let deepthinkContent = '';
+                        
+                        if (parentContainer) {
+                            const contentElements = parentContainer.querySelectorAll('p, div[class*="content"]');
+                            if (contentElements.length > 0) {
+                                deepthinkContent = Array.from(contentElements)
+                                    .map(el => el.innerText || el.textContent)
+                                    .join('\\n');
+                            }
+                        }
+                        
+                        return { duration, content: deepthinkContent };
+                    }
+                    
+                    return null;
+                })()
+                """)
                 
-                # DeepThink content is shown by default, no need to click anything
-                deepthink_content = await self.browser.main_tab.select_all(self.selectors.interactions.deepthink_content)
-                soup = BeautifulSoup(repr(deepthink_content[-1]), 'html.parser')
-                deepthink_content = "\n".join(get_text(str(p)).strip() for p in soup.find_all('p'))
-
+                if deepthink_info:
+                    deepthink_duration = deepthink_info.get('duration')
+                    deepthink_content = deepthink_info.get('content')
+            except Exception as e:
+                self.logger.debug(f"Error extracting DeepThink info: {str(e)}")
+        
+        # Look for search results
+        if self._search_enabled:
+            try:
+                search_results_data = await self._find_element_by_js("""
+                (function() {
+                    // Look for search results section
+                    const searchHeaders = Array.from(document.querySelectorAll('div, h3, h4'))
+                        .filter(el => {
+                            const text = el.textContent.toLowerCase();
+                            return text.includes('search') && text.includes('results');
+                        });
+                    
+                    if (searchHeaders.length === 0) return null;
+                    
+                    // Find search results container
+                    const searchContainer = searchHeaders[0].closest('div[class*="container"], div[class*="results"]');
+                    if (!searchContainer) return null;
+                    
+                    // Extract search result items
+                    const resultItems = Array.from(searchContainer.querySelectorAll('div[class*="result"], div[class*="item"]'));
+                    
+                    return resultItems.map(item => {
+                        const img = item.querySelector('img');
+                        const titleEl = item.querySelector('h3, h4, div[class*="title"]');
+                        const descEl = item.querySelector('p, div[class*="description"]');
+                        const metaElements = item.querySelectorAll('span, div[class*="meta"]');
+                        
+                        // Extract metadata (website, date, index)
+                        let website = '';
+                        let date = '';
+                        let index = 0;
+                        
+                        if (metaElements.length >= 3) {
+                            website = metaElements[0].textContent || '';
+                            date = metaElements[1].textContent || '';
+                            const indexMatch = metaElements[2].textContent.match(/\\d+/);
+                            index = indexMatch ? parseInt(indexMatch[0]) : 0;
+                        }
+                        
+                        return {
+                            image_url: img ? img.src : '',
+                            website,
+                            date,
+                            index,
+                            title: titleEl ? (titleEl.innerText || titleEl.textContent) : '',
+                            description: descEl ? (descEl.innerText || descEl.textContent) : ''
+                        };
+                    });
+                })()
+                """)
+                
+                if search_results_data and isinstance(search_results_data, list):
+                    search_results = []
+                    for item in search_results_data:
+                        search_results.append(SearchResult(
+                            image_url=item.get('image_url', ''),
+                            website=item.get('website', ''),
+                            date=item.get('date', ''),
+                            index=item.get('index', 0),
+                            title=item.get('title', ''),
+                            description=item.get('description', '')
+                        ))
+            except Exception as e:
+                self.logger.debug(f"Error extracting search results: {str(e)}")
+    
         response = Response(
-            text = response_text,
-            chat_id = self._chat_id,
-            deepthink_duration = deepthink_duration,
-            deepthink_content = deepthink_content,
-            search_results = search_results
+            text=response_text,
+            chat_id=self._chat_id,
+            deepthink_duration=deepthink_duration,
+            deepthink_content=deepthink_content,
+            search_results=search_results
         )
         
         self.logger.debug("Response generated!")
@@ -1043,37 +1174,169 @@ class DeepSeek:
         self.logger.debug("Theme switched!")
 
 
-        # does not work, couldnt figure out how to select an option in a dropdown
-        # self.logger.debug(f"Switching the theme to: {theme.name}")
-        # profile_button = await self.browser.main_tab.select(self.selectors.interactions.profile_button)
-        # await profile_button.click()
-
-        # profile_options_dropdown = await self.browser.main_tab.select(self.selectors.interactions.profile_options_dropdown)
-        # await profile_options_dropdown.click()
-
-        # settings_button = await self._find_child_by_text(
-        #     parent = profile_options_dropdown,
-        #     text = "Settings",
-        #     in_depth = True
-        # )
-        # if not settings_button:
-        #     raise CouldNotFindElement("Could not find the settings button")
-        # await settings_button.click()
-
-        # theme_select_parent = await self.browser.main_tab.select_all(self.selectors.interactions.theme_select_parent)
-        # # click the actual theme select, use -1 since the last is the theme
-        # # await theme_select_parent[-1].children[0].click()
-        # await theme_select_parent[-1].children[0].mouse_click() # this works, but try with headless later
-        # # try_another = False
-        # # await sleep(3)
-        # # breakpoint()
-        # # if try_another:
-        # #     await theme_select_parent[-1].children[1].mouse_click()
-        # await sleep(5)
         
-        # for child in theme_select_parent[-1].children[0].children:
-        #     if child.text_all.lower() == theme.name.lower(): # figure this out TODO
-        #         await child.mouse_click()
-        #         break
-
-        # breakpoint()
+    async def _find_element_by_js(self, js_search_function: str) -> Optional[str]:
+            """Uses JavaScript to find elements in a more dynamic way.
+            
+            Args:
+                js_search_function: JavaScript function string that returns an element or null
+            
+            Returns:
+                Optional CSS selector for the found element
+            """
+            if not self._initialized:
+                raise MissingInitialization("You must run the initialize method before using this method.")
+                
+            result = await self.browser.main_tab.evaluate(
+                js_search_function,
+                await_promise=True,
+                return_by_value=True
+            )
+            return result
+        
+    async def find_textbox(self) -> Optional[zendriver.Element]:
+            """Dynamically finds the chat input textbox."""
+            selector = await self._find_element_by_js("""
+            (function() {
+                // Try to find the chat input
+                const textareas = Array.from(document.querySelectorAll('textarea'));
+                
+                // Look for chat input by placeholder text first
+                const chatInput = textareas.find(el => 
+                    el.placeholder && 
+                    (el.placeholder.toLowerCase().includes("message") || 
+                     el.placeholder.toLowerCase().includes("chat") ||
+                     el.placeholder.toLowerCase().includes("ask"))
+                );
+                
+                if (chatInput) return chatInput.tagName.toLowerCase() + 
+                    (chatInput.id ? `#${chatInput.id}` : '') + 
+                    (chatInput.className ? `.${chatInput.className.split(' ')[0]}` : '');
+                
+                // If no specialized textarea found, find the most prominent one
+                // (typically the one with the largest height or in the bottom part of page)
+                if (textareas.length > 0) {
+                    // Sort by position from bottom and size
+                    textareas.sort((a, b) => {
+                        const aRect = a.getBoundingClientRect();
+                        const bRect = b.getBoundingClientRect();
+                        // Prefer elements closer to bottom of page and with larger area
+                        const aScore = (window.innerHeight - aRect.bottom) + (aRect.height * aRect.width * 0.01);
+                        const bScore = (window.innerHeight - bRect.bottom) + (bRect.height * bRect.width * 0.01);
+                        return aScore - bScore;
+                    });
+                    
+                    const bestTextarea = textareas[0];
+                    return bestTextarea.tagName.toLowerCase() + 
+                        (bestTextarea.id ? `#${bestTextarea.id}` : '') + 
+                        (bestTextarea.className ? `.${bestTextarea.className.split(' ')[0]}` : '');
+                }
+                
+                // Try contenteditable divs if no textareas found
+                const editableDivs = Array.from(document.querySelectorAll('div[contenteditable="true"]'));
+                if (editableDivs.length > 0) {
+                    const bestDiv = editableDivs[0];
+                    return bestDiv.tagName.toLowerCase() + 
+                        (bestDiv.id ? `#${bestDiv.id}` : '') + 
+                        (bestDiv.className ? `.${bestDiv.className.split(' ')[0]}` : '');
+                }
+                
+                return null;
+            })()
+            """)
+            
+            if selector:
+                self.logger.debug(f"Found textbox with selector: {selector}")
+                try:
+                    return await self.browser.main_tab.select(selector, timeout=5)
+                except:
+                    self.logger.error(f"Failed to select textbox with selector: {selector}")
+            
+            # Fallback to direct search
+            try:
+                return await self.browser.main_tab.select('textarea', timeout=5)
+            except:
+                self.logger.error("Could not find textbox with any method")
+                return None
+        
+    async def find_send_button(self) -> Optional[zendriver.Element]:
+            """Dynamically finds the send button."""
+            selector = await self._find_element_by_js("""
+            (function() {
+                // Look for send button by various attributes
+                const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
+                
+                // First try buttons with send-related text
+                const sendButton = buttons.find(el => {
+                    const text = el.textContent.toLowerCase();
+                    return text.includes('send') || text === '↵' || text === '→' || text === '⏎';
+                });
+                
+                if (sendButton) return sendButton.tagName.toLowerCase() + 
+                    (sendButton.id ? `#${sendButton.id}` : '') + 
+                    (sendButton.className ? `.${sendButton.className.split(' ')[0]}` : '');
+                
+                // Next, look for buttons with send-related attributes
+                const attrButton = buttons.find(el => 
+                    (el.getAttribute('aria-label') && 
+                     el.getAttribute('aria-label').toLowerCase().includes('send')) ||
+                    (el.title && el.title.toLowerCase().includes('send'))
+                );
+                
+                if (attrButton) return attrButton.tagName.toLowerCase() + 
+                    (attrButton.id ? `#${attrButton.id}` : '') + 
+                    (attrButton.className ? `.${attrButton.className.split(' ')[0]}` : '');
+                
+                // If no specialized button, look for button next to the textarea
+                const textarea = document.querySelector('textarea');
+                if (textarea) {
+                    const closestButton = buttons.sort((a, b) => {
+                        const aRect = a.getBoundingClientRect();
+                        const bRect = b.getBoundingClientRect();
+                        const textareaRect = textarea.getBoundingClientRect();
+                        
+                        // Calculate distance to textarea
+                        const aDist = Math.sqrt(
+                            Math.pow(aRect.left - textareaRect.right, 2) + 
+                            Math.pow(aRect.top - textareaRect.top, 2)
+                        );
+                        const bDist = Math.sqrt(
+                            Math.pow(bRect.left - textareaRect.right, 2) + 
+                            Math.pow(bRect.top - textareaRect.top, 2)
+                        );
+                        
+                        return aDist - bDist;
+                    })[0];
+                    
+                    if (closestButton) return closestButton.tagName.toLowerCase() + 
+                        (closestButton.id ? `#${closestButton.id}` : '') + 
+                        (closestButton.className ? `.${closestButton.className.split(' ')[0]}` : '');
+                }
+                
+                // If all else fails, try to find a button with an icon
+                const iconButtons = buttons.filter(el => el.querySelector('svg, img'));
+                if (iconButtons.length > 0) {
+                    // Take the last one as it's often the send button
+                    const iconButton = iconButtons[iconButtons.length - 1];
+                    return iconButton.tagName.toLowerCase() + 
+                        (iconButton.id ? `#${iconButton.id}` : '') + 
+                        (iconButton.className ? `.${iconButton.className.split(' ')[0]}` : '');
+                }
+                
+                return null;
+            })()
+            """)
+            
+            if selector:
+                self.logger.debug(f"Found send button with selector: {selector}")
+                try:
+                    return await self.browser.main_tab.select(selector, timeout=5)
+                except:
+                    self.logger.error(f"Failed to select send button with selector: {selector}")
+            
+            # Fallback to direct search
+            try:
+                return await self.browser.main_tab.select('div[role="button"]', timeout=5)
+            except:
+                self.logger.error("Could not find send button with any method")
+                return None
